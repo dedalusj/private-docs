@@ -1,0 +1,126 @@
+Description: >
+    Create a CloudFront distribution for an S3 path and protects it using Google OAuth
+
+Parameters:
+  DomainName:
+    Type: String
+  S3Bucket:
+    Type: String
+  LambdaArchiveS3Bucket:
+    Type: String
+  LambdaArchiveName:
+    Type: String
+
+Resources:
+  CFOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: CloudFrontOAI
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action: s3:GetObject
+            Principal:
+              CanonicalUser: !GetAtt CFOriginAccessIdentity.S3CanonicalUserId
+            Resource: !Sub 'arn:aws:s3:::${S3Bucket}/*'
+
+  CFDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: 'true'
+        Comment : Auth at Edge Test Distro
+        DefaultRootObject: index.html
+        Aliases:
+          - !Ref DomainName
+        Origins:
+          - Id: S3Origin
+            DomainName: !Sub ${S3Bucket}.s3.amazonaws.com
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${CFOriginAccessIdentity}
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: 'false'
+            Headers:
+              - Origin
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+          LambdaFunctionAssociations:
+            - EventType: viewer-request
+              LambdaFunctionARN: !Ref PublishedAuthFunction
+
+  EdgeAuthExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+        - Effect: Allow
+          Principal:
+            Service:
+            - edgelambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+
+  EdgeAuthFunction: 
+    Type: AWS::Lambda::Function
+    DeletionPolicy: Retain
+    Properties: 
+      Handler: index.handler
+      Role: !GetAtt EdgeAuthExecutionRole.Arn
+      Runtime: nodejs6.10
+      Timeout: 5
+      MemorySize: 128
+      Code:
+        S3Bucket: !Ref LambdaArchiveS3Bucket 
+        S3Key: !Ref LambdaArchiveName
+
+  PublishedAuthFunction: 
+    Type: AWS::Lambda::Version
+    Properties: 
+      FunctionName: !Ref EdgeAuthFunction
+      Description: "Puslished version of EdgeAuthFunction"
+
+  CFDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub "${DomainName}."
+      Name: !Sub "${DomainName}."
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CFDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+Outputs:
+  CloudFrontDistribution:
+    Description: Edit CloudFront distribution settings
+    Value: !Sub 'https://console.aws.amazon.com/cloudfront/home?region=${AWS::Region}#distribution-settings:${CFDistribution}'
+  SiteURL:
+    Description: Website available at
+    Value: !Sub 'https://${CFDistribution.DomainName}/'
