@@ -2,6 +2,8 @@
 
 set -euf -o pipefail
 
+REPO_NAME="dedalusj/private-docs"
+
 SCRIPT_PATH="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 PROMPT_PREFIX=">>"
@@ -36,11 +38,9 @@ CORS_CONFIGURATION_CONTENT='
 '
 
 AWS_REGION="us-east-1"
-STACK_PREFIX="private-website"
+STACK_PREFIX="private-docs"
 CF_TEMPLATE_FILE_NAME="cf_template.yml"
 CF_TEMPLATE_FILE_PATH="${SCRIPT_PATH}/${CF_TEMPLATE_FILE_NAME}"
-
-source ${SCRIPT_PATH}/mo
 
 function prompt {
 	echo -n "${PROMPT_PREFIX} $@ " 1>&2
@@ -63,6 +63,7 @@ function validate_tools {
 	which ssh-keygen > /dev/null || die "Required ssh-keygen not found."
 	which openssl > /dev/null || die "Required openssl not found."
 	which zip > /dev/null || die "Required zip not found."
+	which unzip > /dev/null || die "Required unzip not found."
 	which aws > /dev/null || die "Required aws cli not found. See https://docs.aws.amazon.com/cli/latest/userguide/installing.html to install."
 }
 
@@ -140,7 +141,9 @@ function validate_s3_bucket {
     fi
 }
 
-function main {
+function run {
+	source ${SCRIPT_PATH}/mo
+
     validate_tools
 
 	reset_temp_dir || die "Failed to recreate temporary directory ${TMP_DIR}"
@@ -208,4 +211,23 @@ function main {
     info "If you require HTTPS access to the site change the SSL certificate for the CloudFront distribution here: ${CLOUDFRONT_AWS_URL}"
 }
 
-main
+function get_latest_release {
+	info "Retrieving private-docs last version"
+    curl --silent "https://api.github.com/repos/${REPO_NAME}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || die "Failed to retrieve last version"
+}
+
+function install {
+	local OUTPUT_DIR=$1
+	local VERSION=$(get_latest_release)
+	local REPO_ARCHIVE_URL="https://github.com/${REPO_NAME}/archive/${VERSION}.zip"
+	info "Downloading private-docs version: ${VERSION}"
+	curl --silent -L -o /tmp/private-docs.zip "${REPO_ARCHIVE_URL}" || die "Failed to download private-docs zip archive"
+    unzip -q /tmp/private-docs.zip || die "Failed to unzip private-docs archive"
+}
+
+function deploy {
+	install $(pwd)
+	$(pwd)/privaste-docs/private-docs.sh run
+}
+
+"$@"
